@@ -526,3 +526,171 @@ def animate_probability_distribution(model, X, y, recorder, fps=10,
             print("Make sure FFmpeg is installed: brew install ffmpeg")
     
     return anim, fig
+
+
+def animate_training_loss(recorder, fps=10, save_path="training_loss.mp4"):
+    """
+    Create animated video showing training and test loss over epochs.
+    Lines grow as training progresses with fixed axis ranges.
+    """
+    epochs = [state['epoch'] for state in recorder.history]
+    train_losses = [state['loss'] for state in recorder.history]
+    test_losses = [state.get('test_loss', 0) for state in recorder.history]
+
+    max_loss = max(max(train_losses), max(test_losses)) * 1.1
+    min_loss = 0
+
+    # Use green for train, purple for test
+    train_color = '#2ECC71'  # Green
+    test_color = '#9B59B6'    # Purple
+
+    fig, ax = plt.subplots(figsize=(16, 9))
+    fig.patch.set_facecolor(PLAYGROUND_COLORS['background'])
+    fig.subplots_adjust(left=0.05, right=0.95, top=0.93, bottom=0.07)
+
+    def _style_axis(axis: plt.Axes, x_lim, y_lim):
+        axis.set_facecolor('white')
+        axis.set_xlim(x_lim)
+        axis.set_ylim(y_lim)
+        axis.set_xlabel('Epoch', fontsize=16, fontweight='bold', color=PLAYGROUND_COLORS['text'])
+        axis.set_ylabel('Loss', fontsize=16, fontweight='bold', color=PLAYGROUND_COLORS['text'])
+        axis.tick_params(colors=PLAYGROUND_COLORS['text'], labelsize=15, length=0)
+        for spine in axis.spines.values():
+            spine.set_visible(False)
+        axis.grid(True, color=PLAYGROUND_COLORS['grid'], alpha=0.25, linestyle='--', linewidth=0.6)
+
+    info_text = fig.text(
+        0.06, 0.93, '',
+        fontsize=16, fontweight='bold', color=PLAYGROUND_COLORS['text'],
+        bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.9,
+                  edgecolor=PLAYGROUND_COLORS['grid'])
+    )
+
+    def animate(frame):
+        ax.clear()
+
+        current_epochs = epochs[:frame+1]
+        current_train_losses = train_losses[:frame+1]
+        current_test_losses = test_losses[:frame+1]
+
+        ax.plot(current_epochs, current_train_losses, color=train_color,
+                 linewidth=4.0, alpha=0.9, label='Train')
+        ax.plot(current_epochs, current_test_losses, color=test_color,
+                 linewidth=4.0, alpha=0.9, label='Test')
+        _style_axis(ax, (0, max(epochs)), (min_loss, max_loss))
+        legend = ax.legend(loc='lower left', frameon=False, fontsize=16)
+        for text in legend.get_texts():
+            text.set_color(PLAYGROUND_COLORS['text'])
+
+        info_text.set_text(
+            f"Epoch {current_epochs[-1]}"
+            f"\nLoss: {current_train_losses[-1]:.4f} / {current_test_losses[-1]:.4f}"
+        )
+
+        return ax, info_text
+
+    n_frames = len(recorder.history)
+    anim = FuncAnimation(fig, animate, frames=n_frames, interval=1000/fps,
+                         blit=False, repeat=True)
+
+    print(f"Creating training loss video with {n_frames} frames...")
+    try:
+        writer = FFMpegWriter(fps=fps, bitrate=1800)
+        anim.save(save_path, writer=writer)
+        print(f"Video saved to {save_path}")
+    except Exception as e:
+        print(f"FFmpeg not available, trying Pillow (GIF)...")
+        try:
+            gif_path = save_path.replace('.mp4', '.gif')
+            writer = PillowWriter(fps=fps)
+            anim.save(gif_path, writer=writer)
+            print(f"GIF saved to {gif_path}")
+        except Exception as e2:
+            print(f"Error saving video: {e2}")
+            print("Make sure FFmpeg is installed: brew install ffmpeg")
+
+    return anim, fig
+
+
+def animate_training_accuracy(recorder, fps=10, save_path="training_accuracy.mp4"):
+    """
+    Create animated video showing training and test accuracy over epochs.
+    Lines grow as training progresses with fixed axis ranges.
+    """
+    epochs = [state['epoch'] for state in recorder.history]
+    train_accuracies = [state.get('accuracy', 0) for state in recorder.history]
+    test_accuracies = [state.get('test_accuracy', 0) for state in recorder.history]
+
+    min_acc = min(min(train_accuracies), min(test_accuracies)) * 0.9 if min(train_accuracies) > 0 else 0
+    max_acc = 1.0
+
+    # Use green for train, purple for test
+    train_color = '#2ECC71'  # Green
+    test_color = '#9B59B6'    # Purple
+
+    fig, ax = plt.subplots(figsize=(16, 9))
+    fig.patch.set_facecolor(PLAYGROUND_COLORS['background'])
+    fig.subplots_adjust(left=0.05, right=0.95, top=0.93, bottom=0.07)
+
+    def _style_axis(axis: plt.Axes, x_lim, y_lim):
+        axis.set_facecolor('white')
+        axis.set_xlim(x_lim)
+        axis.set_ylim(y_lim)
+        axis.set_xlabel('Epoch', fontsize=16, fontweight='bold', color=PLAYGROUND_COLORS['text'])
+        axis.set_ylabel('Accuracy', fontsize=16, fontweight='bold', color=PLAYGROUND_COLORS['text'])
+        axis.tick_params(colors=PLAYGROUND_COLORS['text'], labelsize=16, length=0)
+        for spine in axis.spines.values():
+            spine.set_visible(False)
+        axis.grid(True, color=PLAYGROUND_COLORS['grid'], alpha=0.25, linestyle='--', linewidth=0.6)
+
+    info_text = fig.text(
+        0.06, 0.93, '',
+        fontsize=16, fontweight='bold', color=PLAYGROUND_COLORS['text'],
+        bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.9,
+                  edgecolor=PLAYGROUND_COLORS['grid'])
+    )
+
+    def animate(frame):
+        ax.clear()
+
+        current_epochs = epochs[:frame+1]
+        current_train_accs = train_accuracies[:frame+1]
+        current_test_accs = test_accuracies[:frame+1]
+
+        ax.plot(current_epochs, current_train_accs, color=train_color,
+                 linewidth=4.0, alpha=0.9, label='Train')
+        ax.plot(current_epochs, current_test_accs, color=test_color,
+                 linewidth=4.0, alpha=0.9, label='Test')
+        _style_axis(ax, (0, max(epochs)), (min_acc, max_acc))
+        legend = ax.legend(loc='lower right', frameon=False, fontsize=16)
+        for text in legend.get_texts():
+            text.set_color(PLAYGROUND_COLORS['text'])
+
+        info_text.set_text(
+            f"Epoch {current_epochs[-1]}"
+            f"\nAcc: {current_train_accs[-1]:.2%} / {current_test_accs[-1]:.2%}"
+        )
+
+        return ax, info_text
+
+    n_frames = len(recorder.history)
+    anim = FuncAnimation(fig, animate, frames=n_frames, interval=1000/fps,
+                         blit=False, repeat=True)
+
+    print(f"Creating training accuracy video with {n_frames} frames...")
+    try:
+        writer = FFMpegWriter(fps=fps, bitrate=1800)
+        anim.save(save_path, writer=writer)
+        print(f"Video saved to {save_path}")
+    except Exception as e:
+        print(f"FFmpeg not available, trying Pillow (GIF)...")
+        try:
+            gif_path = save_path.replace('.mp4', '.gif')
+            writer = PillowWriter(fps=fps)
+            anim.save(gif_path, writer=writer)
+            print(f"GIF saved to {gif_path}")
+        except Exception as e2:
+            print(f"Error saving video: {e2}")
+            print("Make sure FFmpeg is installed: brew install ffmpeg")
+
+    return anim, fig
