@@ -395,3 +395,134 @@ def animate_dataset_scatter_plot(X, y, batch_size, fps=10, save_path="dataset_sc
             print("Make sure FFmpeg is installed: brew install ffmpeg")
     
     return anim, fig
+
+
+def animate_probability_distribution(model, X, y, recorder, fps=10,
+                                     save_path="probability_distribution.mp4"):
+    """
+    Create animated video showing how predicted probabilities evolve during training.
+    Points are displayed on a number line from 0 to 1, colored by true label.
+    
+    Args:
+        model: Sequential model
+        X: Training data (N, features)
+        y: Labels (N,)
+        recorder: TrainingRecorder with training history
+        fps: Frames per second
+        save_path: Path to save video
+    """
+    n_samples = len(X)
+    x_min, x_max = -0, 1
+    y_min, y_max = -0.5, n_samples * 0.02 + 0.5
+    
+    # Setup figure (16:9)
+    fig, ax = plt.subplots(figsize=(16, 9))
+    fig.patch.set_facecolor(PLAYGROUND_COLORS['background'])
+    fig.subplots_adjust(left=0, right=1, top=1, bottom=0.07)
+    
+    # Create y-offset based on index to spread points vertically
+    y_offset = np.arange(n_samples) * 0.02  # Small vertical offset per point
+    
+    # Get initial predictions
+    recorder.restore_model_state(model, recorder.get_all_epochs()[0])
+    initial_probs = model.forward(X)
+    if initial_probs.shape[1] == 1:
+        initial_probs = initial_probs.flatten()
+    else:
+        initial_probs = initial_probs[:, 0]
+    
+    def _style_probability_axes(axis: plt.Axes):
+        # axis.set_facecolor('white')
+        axis.set_xlim(x_min, x_max)
+        axis.set_ylim(y_min, y_max)
+        # Show x-axis ticks, hide y-axis ticks
+        axis.tick_params(axis='x', which='both', length=0, colors=PLAYGROUND_COLORS['text'], labelsize=16)  # Hide x-axis tick marks
+        axis.tick_params(axis='y', which='both', length=0)  # Hide y-axis tick marks
+        axis.set_xticks([0.05, 0.95])
+        axis.set_xticklabels(['Class 0', 'Class 1']) 
+        axis.set_xlabel('Prediction', fontsize=16, fontweight='bold', color=PLAYGROUND_COLORS['text'])
+        for spine in axis.spines.values():
+            spine.set_visible(False)
+        axis.grid(True, color=PLAYGROUND_COLORS['grid'], alpha=0.25, linestyle='--', linewidth=0.6)
+    
+    def _draw_scatter(axis: plt.Axes, probs):
+        scatter_plot = axis.scatter(
+            probs,
+            y_offset,
+            c=[PLAYGROUND_COLORS['class_0'] if label == 0 else PLAYGROUND_COLORS['class_1']
+               for label in y.flatten()],
+            edgecolors='white',
+            linewidths=1.5,
+            s=55,
+            alpha=0.85,
+            zorder=10
+        )
+        axis.axvline(x=0.5, color='#1F2D3D', linestyle='--', linewidth=2, alpha=0.6)
+        return scatter_plot
+    
+    _style_probability_axes(ax)
+    scatter = _draw_scatter(ax, initial_probs)
+    
+    # Info text (figure-level so it persists when axis clears)
+    info_text = fig.text(
+        0.06,
+        0.93,
+        '',
+        fontsize=16,
+        fontweight='bold',
+        color=PLAYGROUND_COLORS['text'],
+        bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.9,
+                  edgecolor=PLAYGROUND_COLORS['grid'])
+    )
+    
+    # Animation function
+    def animate(frame):
+        ax.clear()
+        
+        epoch = recorder.get_all_epochs()[frame]
+        state = recorder.get_state_at_epoch(epoch)
+        
+        # Restore model state
+        recorder.restore_model_state(model, epoch)
+        
+        # Get predictions
+        probs = model.forward(X)
+        if probs.shape[1] == 1:
+            probs = probs.flatten()
+        else:
+            probs = probs[:, 0]
+        
+        # Plot points
+        scatter = _draw_scatter(ax, probs)
+        _style_probability_axes(ax)
+        
+        # Update info text
+        loss_val = state.get('loss', 0)
+        acc_val = state.get('accuracy', 0)
+        info_text.set_text(f"Epoch {epoch}\nLoss: {loss_val:.4f} | Acc: {acc_val:.2%}")
+        
+        return scatter, info_text
+    
+    # Create animation
+    n_frames = len(recorder.history)
+    anim = FuncAnimation(fig, animate, frames=n_frames, interval=1000/fps,
+                        blit=False, repeat=True)
+    
+    # Save video
+    print(f"Creating probability distribution video with {n_frames} frames...")
+    try:
+        writer = FFMpegWriter(fps=fps, bitrate=1800)
+        anim.save(save_path, writer=writer)
+        print(f"Video saved to {save_path}")
+    except Exception as e:
+        print(f"FFmpeg not available, trying Pillow (GIF)...")
+        try:
+            gif_path = save_path.replace('.mp4', '.gif')
+            writer = PillowWriter(fps=fps)
+            anim.save(gif_path, writer=writer)
+            print(f"GIF saved to {gif_path}")
+        except Exception as e2:
+            print(f"Error saving video: {e2}")
+            print("Make sure FFmpeg is installed: brew install ffmpeg")
+    
+    return anim, fig
