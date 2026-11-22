@@ -694,3 +694,503 @@ def animate_training_accuracy(recorder, fps=10, save_path="training_accuracy.mp4
             print("Make sure FFmpeg is installed: brew install ffmpeg")
 
     return anim, fig
+
+
+def animate_network_architecture(model, X, recorder, fps=10, save_path="network_architecture.mp4",
+                                  layer_spacing=6.0, padding=0.3):
+    """
+    Create animated video showing neural network architecture with neuron activation visualization.
+    Each neuron node shows its activation pattern as a visualization.
+    
+    Args:
+        model: Sequential model
+        X: Input data (N, features) - used to compute activations
+        recorder: TrainingRecorder with training history
+        fps: Frames per second
+        save_path: Path to save video
+        layer_spacing: Horizontal spacing between layers
+        padding: Padding between neurons in a column (as fraction of node size)
+    """
+    # Extract layer information (only Linear layers)
+    linear_layers = []
+    layer_dims = []
+    activation_layers = []  # All layers (including activations)
+    
+    for layer in model.layers:
+        if hasattr(layer, 'W'):
+            linear_layers.append(layer)
+            in_dim = layer.W.shape[0]
+            out_dim = layer.W.shape[1]
+            layer_dims.append((in_dim, out_dim))
+        activation_layers.append(layer)
+    
+    if len(linear_layers) == 0:
+        raise ValueError("No Linear layers found in model")
+    
+    # Determine input dimension (first layer's input)
+    input_dim = layer_dims[0][0]
+    layer_dims.insert(0, (input_dim, None))  # Add input layer
+    
+    # Calculate max neurons in any layer to determine node size
+    neuron_counts = [layer_dims[0][0]]  # input layer
+    neuron_counts.extend([dims[1] for dims in layer_dims[1:] if dims[1] is not None])  # output layers
+    max_neurons = max(neuron_counts) if neuron_counts else 1
+    
+    # Calculate available vertical space
+    # Estimate based on number of layers and neurons
+    # Use a reasonable scale: if max_neurons is large, make nodes smaller
+    # Target: nodes should be visible but not overlap
+    # Make neurons larger (increased base sizes)
+    if max_neurons <= 5:
+        base_size = 2.0
+    elif max_neurons <= 10:
+        base_size = 1.6
+    elif max_neurons <= 20:
+        base_size = 1.0
+    else:
+        base_size = 0.6
+    
+    # Calculate node size with padding
+    # Use rectangular shape: width and height
+    node_width = base_size * 1.2  # Slightly wider for rectangular shape
+    node_height = base_size
+    neuron_radius = max(node_width, node_height) / 2  # For spacing calculations
+    
+    # Calculate neuron spacing based on node size and padding
+    neuron_spacing = node_height * (1 + padding)
+    
+    # Calculate positions for neurons
+    neuron_positions = {}  # {(layer_idx, neuron_idx): (x, y)}
+    
+    # Layout neurons
+    # Layer 0 is input, then each subsequent layer is the output of a Linear layer
+    for layer_idx in range(len(layer_dims)):
+        if layer_idx == 0:
+            # Input layer
+            in_dim, _ = layer_dims[0]
+            n_neurons = in_dim
+            x_pos = 0
+        else:
+            # Output layer of the (layer_idx-1)th Linear layer
+            _, out_dim = layer_dims[layer_idx]
+            n_neurons = out_dim
+            x_pos = layer_idx * layer_spacing
+        
+        # Center neurons vertically
+        total_height = (n_neurons - 1) * neuron_spacing
+        start_y = -total_height / 2
+        
+        for neuron_idx in range(n_neurons):
+            y_pos = start_y + neuron_idx * neuron_spacing
+            neuron_positions[(layer_idx, neuron_idx)] = (x_pos, y_pos)
+    
+    # Helper function to compute activations at each layer
+    def compute_layer_activations(model, X):
+        """Compute activations at each layer for given input."""
+        activations = {}
+        current_input = X
+        
+        # Input layer activations (just the input)
+        activations[0] = current_input
+        
+        layer_idx = 1
+        for layer in model.layers:
+            current_input = layer.forward(current_input)
+            # Store activations after each layer (including activations)
+            activations[layer_idx] = current_input
+            layer_idx += 1
+        
+        return activations
+    
+    # Compute activations for a sample of inputs (use mean for visualization)
+    # Use a subset of data for performance
+    sample_size = min(100, len(X))
+    X_sample = X[:sample_size]
+    
+    # Get activation range across all epochs for consistent scaling
+    all_activations = []
+    for epoch in recorder.get_all_epochs():
+        recorder.restore_model_state(model, epoch)
+        activations = compute_layer_activations(model, X_sample)
+        for layer_idx, act in activations.items():
+            all_activations.append(act.flatten())
+    
+    all_act_values = np.concatenate(all_activations)
+    max_activation = np.abs(all_act_values).max() if len(all_act_values) > 0 else 1.0
+    
+    # Setup figure (16:9) - use full width, no padding
+    fig, ax = plt.subplots(figsize=(16, 9))
+    fig.patch.set_facecolor(PLAYGROUND_COLORS['background'])
+    fig.subplots_adjust(left=0.0, right=1.0, top=1.0, bottom=0.0)
+    ax.set_facecolor('white')
+    ax.set_aspect('equal')
+    ax.axis('off')
+    
+    # Create colormap for activations
+    activation_cmap = create_visualization_colormap()
+    
+    def _style_network_axis(axis: plt.Axes):
+        axis.set_facecolor('white')
+        axis.set_aspect('equal')
+        axis.axis('off')
+    
+    _style_network_axis(ax)
+    
+    # Info text (figure level)
+    info_text = fig.text(
+        0.06,
+        0.93,
+        '',
+        fontsize=16,
+        fontweight='bold',
+        color=PLAYGROUND_COLORS['text'],
+        bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.9,
+                  edgecolor=PLAYGROUND_COLORS['grid'])
+    )
+    
+    # Animation function
+    def animate(frame):
+        try:
+            ax.clear()
+            _style_network_axis(ax)
+            
+            epochs = recorder.get_all_epochs()
+            if frame >= len(epochs):
+                return []
+            
+            epoch = epochs[frame]
+            state = recorder.get_state_at_epoch(epoch)
+            
+            # Restore model state
+            recorder.restore_model_state(model, epoch)
+            
+            # Compute current activations
+            activations = compute_layer_activations(model, X_sample)
+            
+            # Draw network with activations
+            _draw_network_with_activations(ax, model, layer_dims, neuron_positions, neuron_radius,
+                                          activations, activation_cmap, max_activation, X_sample, layer_spacing,
+                                          node_width, node_height)
+            
+            # Update info text
+            loss_val = state.get('loss', 0)
+            acc_val = state.get('accuracy', 0)
+            info_text.set_text(f"Epoch {epoch}\nLoss: {loss_val:.4f} | Acc: {acc_val:.2%}")
+            
+            return [info_text]
+        except Exception as e:
+            print(f"Error in animation frame {frame}: {e}")
+            traceback.print_exc()
+            return []
+    
+    # Create animation
+    n_frames = len(recorder.history)
+    anim = FuncAnimation(fig, animate, frames=n_frames, interval=1000/fps,
+                        blit=False, repeat=True)
+    
+    # Save video
+    print(f"Creating network architecture video with {n_frames} frames...")
+    try:
+        writer = FFMpegWriter(fps=fps, bitrate=1800)
+        anim.save(save_path, writer=writer)
+        print(f"Video saved to {save_path}")
+    except Exception as e:
+        print(f"FFmpeg not available, trying Pillow (GIF)...")
+        try:
+            gif_path = save_path.replace('.mp4', '.gif')
+            writer = PillowWriter(fps=fps)
+            anim.save(gif_path, writer=writer)
+            print(f"GIF saved to {gif_path}")
+        except Exception as e2:
+            print(f"Error saving video: {e2}")
+            print("Make sure FFmpeg is installed: brew install ffmpeg")
+    
+    return anim, fig
+
+
+def _draw_network_with_activations(ax, model, layer_dims, neuron_positions, neuron_radius,
+                                   activations_dict, activation_cmap, max_activation, X_sample, layer_spacing,
+                                   node_width=None, node_height=None):
+    """Helper function to draw the network architecture with activation visualizations."""
+    
+    # Use provided dimensions or default to square
+    if node_width is None:
+        node_width = neuron_radius * 2
+    if node_height is None:
+        node_height = neuron_radius * 2
+    
+    # Set axis limits based on neuron positions - include space for labels
+    if neuron_positions:
+        all_x = [pos[0] for pos in neuron_positions.values()]
+        all_y = [pos[1] for pos in neuron_positions.values()]
+        x_min, x_max = min(all_x), max(all_x)
+        y_min, y_max = min(all_y), max(all_y)
+        ax.set_xlim(x_min - node_width/2, x_max + node_width/2)
+        # Add padding: top for labels, bottom for spacing below last neuron
+        ax.set_ylim(y_min - node_height/2 - 1.0, y_max + node_height/2 + 1.0)
+    
+    # Extract linear layers for drawing connections
+    linear_layers = []
+    for layer in model.layers:
+        if hasattr(layer, 'W'):
+            linear_layers.append(layer)
+    
+    # Get max weight for connection visualization
+    all_weights = []
+    for layer in linear_layers:
+        all_weights.append(np.abs(layer.W).max())
+    max_weight = max(all_weights) if all_weights else 1.0
+    
+    # Draw connections (weights)
+    layer_idx = 1  # Start from first hidden layer (skip input layer)
+    for layer in linear_layers:
+        W = layer.W  # Shape: (in_dim, out_dim)
+        in_dim, out_dim = W.shape
+        
+        # Draw connections from previous layer to current layer
+        for i in range(in_dim):
+            for j in range(out_dim):
+                weight = W[i, j]
+                weight_abs = abs(weight)
+                
+                # Get positions
+                if layer_idx == 1:
+                    start_pos = neuron_positions[(0, i)]
+                else:
+                    start_pos = neuron_positions[(layer_idx - 1, i)]
+                
+                end_pos = neuron_positions[(layer_idx, j)]
+                
+                # Line width proportional to weight magnitude
+                line_width = max(0.05, (weight_abs / max_weight) * 3.0) if max_weight > 0 else 0.05
+                
+                # Color based on weight sign (blue for negative, red for positive, gray for zero)
+                if weight > 0:
+                    color = '#D62728'  # Red for positive weights
+                elif weight < 0:
+                    color = '#1F77B4'  # Blue for negative weights
+                else:
+                    color = '#95A5A6'  # Neutral gray for zero weights
+
+                # Draw connection
+                ax.plot([start_pos[0], end_pos[0]], [start_pos[1], end_pos[1]],
+                       color=color, linewidth=line_width, alpha=0.5, zorder=1)
+        
+        layer_idx += 1
+
+    # Helper function to compute activations (needed for mesh)
+    def compute_layer_activations_local(model, X):
+        """Compute activations at each layer for given input."""
+        activations = {}
+        current_input = X
+        activations[0] = current_input
+        layer_idx = 1
+        for layer in model.layers:
+            current_input = layer.forward(current_input)
+            activations[layer_idx] = current_input
+            layer_idx += 1
+        return activations
+    
+    # Build mapping from layer_dims index to activations_dict index
+    # layer_dims[0] = input = activations_dict[0]
+    # layer_dims[1] = first hidden output (after first Linear+Activation)
+    # layer_dims[2] = second hidden output (after second Linear+Activation)
+    layer_to_activation_map = {0: 0}  # Input layer maps to activations[0]
+    linear_count = 0
+    for i, layer in enumerate(model.layers):
+        if hasattr(layer, 'W'):
+            linear_count += 1
+            # Check if next layer is activation
+            if i + 1 < len(model.layers) and not hasattr(model.layers[i + 1], 'W'):
+                # After processing Linear+Activation, we have an output layer
+                # activations_dict stores after each layer, so after Linear is i+1, after Activation is i+2
+                layer_to_activation_map[linear_count] = i + 2
+    
+    # Helper function to get activation for a specific neuron
+    def get_neuron_activation(activations_dict, target_layer_idx, target_neuron_idx):
+        """Get activation for a specific neuron from activations dictionary."""
+        try:
+            if target_layer_idx not in layer_to_activation_map:
+                return None
+            
+            activation_idx = layer_to_activation_map[target_layer_idx]
+            if activation_idx not in activations_dict:
+                return None
+            
+            act = activations_dict[activation_idx]
+            if act is None or len(act.shape) < 2:
+                return None
+            
+            if act.shape[1] > target_neuron_idx:
+                return act[:, target_neuron_idx]
+            return None
+        except (IndexError, KeyError, AttributeError) as e:
+            return None
+    
+    # Create meshgrid for activation visualization (only for 2D input)
+    # Compute mesh activations once for all neurons
+    mesh_activations_all = None
+    xx = yy = None
+    if X_sample.shape[1] >= 2:
+        res = 30  # Resolution for neuron visualization
+        x_min, x_max = X_sample[:, 0].min() - 0.5, X_sample[:, 0].max() + 0.5
+        y_min, y_max = X_sample[:, 1].min() - 0.5, X_sample[:, 1].max() + 0.5
+        xx, yy = np.meshgrid(np.linspace(x_min, x_max, res),
+                            np.linspace(y_min, y_max, res))
+        mesh_points = np.c_[xx.ravel(), yy.ravel()]
+        
+        # Check if model expects 3D input
+        if hasattr(model.layers[0], 'W') and model.layers[0].W.shape[0] == 3:
+            r = np.sqrt(mesh_points[:, 0]**2 + mesh_points[:, 1]**2).reshape(-1, 1)
+            mesh_input = np.hstack([mesh_points, r])
+        else:
+            mesh_input = mesh_points
+        
+        # Compute activations for mesh once
+        mesh_activations_all = compute_layer_activations_local(model, mesh_input)
+    
+    # Draw neurons with activation visualizations
+    for (layer_idx, neuron_idx), (x, y) in neuron_positions.items():
+        if layer_idx == 0:
+            # Input neurons: just represent the raw input features (x1, x2)
+            # Use simple solid colors to distinguish them
+            # Assign a unique color for each input feature for up to 10 inputs, then cycle if more
+            input_colors = [
+                '#E8F4F8',  # Light blue
+                '#F8E8F4',  # Light pink
+                '#F8F4E8',  # Light yellow
+                '#E8F8E8',  # Light green
+                '#F8EDE8',  # Light orange
+                '#E8EAF8',  # Light lavender
+                '#F8E8E8',  # Light rose
+                '#E8F8F4',  # Light teal
+                '#EDF8E8',  # Light mint
+                '#F2E8F8',  # Light purple
+            ]
+            color = input_colors[neuron_idx % len(input_colors)]
+            
+            rect = Rectangle((x - node_width/2, y - node_height/2), 
+                            node_width, node_height,
+                            color=color,
+                            edgecolor='black', linewidth=1, zorder=10)
+            ax.add_patch(rect)
+            
+            # Add label to show which feature this is
+            # Label from top to bottom as 1, 2, 3... (reverse of neuron_idx order)
+            # Get total number of input neurons
+            n_input_neurons = layer_dims[0][0]
+            # Reverse the index so top neuron is x1, bottom is xN
+            visual_idx = n_input_neurons - 1 - neuron_idx
+            label = f'x{visual_idx + 1}'
+            ax.text(x, y, label, ha='center', va='center', 
+                   fontsize=10, fontweight='bold', color='black', zorder=11)
+            continue
+        
+        # For hidden/output layers, compute and visualize activation
+        if mesh_activations_all is not None and layer_idx > 0:
+            # Get activation for this neuron from the pre-computed activations
+            neuron_activations = get_neuron_activation(mesh_activations_all, layer_idx, neuron_idx)
+            
+            if neuron_activations is not None:
+                # Reshape to grid
+                Z = neuron_activations.reshape(xx.shape)
+                
+                # Determine if this is the output layer (last layer)
+                is_output_layer = (layer_idx == len(layer_dims) - 1)
+                
+                if is_output_layer:
+                    # Output layer: use decision boundary colormap (probability: 0 to 1)
+                    # Normalize to [0, 1] range for probability visualization
+                    Z_norm = np.clip(Z, 0, 1)
+                    
+                    # Use decision boundary colormap
+                    output_cmap = create_visualization_colormap()
+                    Z_rgba = output_cmap(Z_norm)
+                else:
+                    # Hidden layers: use PuOr colormap
+                    z_min, z_max = Z.min(), Z.max()
+                    z_abs_max = max(abs(z_min), abs(z_max))
+                    
+                    if z_abs_max > 0:
+                        if z_min < 0:
+                            # Signed activations (Tanh, etc.): normalize to [-1, 1], then map to [0, 1]
+                            Z_norm = Z / z_abs_max
+                            # Map [-1, 1] to [0, 1] for color scheme
+                            Z_colormap = (Z_norm + 1) / 2
+                        else:
+                            # Positive-only activations (ReLU): map 0 -> mid color(0.5), max -> max color (1.0)
+                            # Map [0, max] to [0.5, 1.0] for color scheme
+                            Z_colormap = 0.5 + (Z / z_max) * 0.5 if z_max > 0 else np.ones_like(Z) * 0.5
+                    else:
+                        Z_colormap = np.ones_like(Z) * 0.5  # White for zero activations
+                    
+                    Z_colormap = np.clip(Z_colormap, 0, 1)
+                    
+                    # Use PuOr colormap for hidden layers
+                    Z_rgba = plt.cm.PuOr(Z_colormap)
+                
+                # Place the image at the neuron's position (rectangular)
+                extent = (
+                    x - node_width/2,
+                    x + node_width/2,
+                    y - node_height/2,
+                    y + node_height/2
+                )
+                ax.imshow(Z_rgba, extent=extent, origin='lower', zorder=11, aspect='auto', interpolation='bilinear')
+                
+                # Overlay decision boundary (where activation = 0)
+                # Transform grid coordinates to neuron-local coordinates
+                try:
+                    # Create coordinate grids in neuron-local space
+                    x_local = np.linspace(x - node_width/2, x + node_width/2, res)
+                    y_local = np.linspace(y - node_height/2, y + node_height/2, res)
+                    xx_local, yy_local = np.meshgrid(x_local, y_local)
+                    
+                    ax.contour(
+                        xx_local, yy_local, Z,
+                        levels=[0],
+                        colors='black',
+                        linewidths=0.8,
+                        zorder=12,
+                        alpha=0.8
+                    )
+                except:
+                    pass  # Skip if contour fails
+        
+        # Draw neuron outline (rectangular)
+        rect = Rectangle((x - node_width/2, y - node_height/2), 
+                        node_width, node_height,
+                        color="none",
+                        edgecolor='black', linewidth=1, zorder=14)
+        ax.add_patch(rect)
+    
+    # Add layer labels (after setting axis limits to ensure they're visible)
+    for layer_idx in range(len(layer_dims)):
+        if layer_idx == 0:
+            label = 'Input'
+        elif layer_idx == len(layer_dims) - 1:
+            label = 'Output'
+        else:
+            # Number hidden layers starting from 1
+            hidden_num = layer_idx
+            label = f'Hidden {hidden_num}'
+        
+        x_pos = 0 if layer_idx == 0 else layer_idx * layer_spacing
+        
+        layer_neurons = [pos for (l_idx, _), pos in neuron_positions.items() if l_idx == layer_idx]
+        if layer_neurons:
+            max_y = max([y for _, y in layer_neurons])
+            # Position label above the top neuron with more spacing
+            label_y = max_y + node_height/2 + 0.3
+            ax.text(x_pos, label_y, label, fontsize=16, fontweight='bold',
+                   color=PLAYGROUND_COLORS['text'], ha='center', va='bottom', 
+                   zorder=100, clip_on=False)
+    
+    # Add legend for connection weights (Negative/Positive)
+    legend_elements = [
+        Line2D([0], [0], color='#1F77B4', lw=3, alpha=0.7, label='Negative'),
+        Line2D([0], [0], color='#D62728', lw=3, alpha=0.7, label='Positive')
+    ]
+    # Position legend in upper right corner
+    ax.legend(handles=legend_elements, loc='upper right', fontsize=16)
+
