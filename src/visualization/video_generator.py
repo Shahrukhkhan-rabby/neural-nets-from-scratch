@@ -210,3 +210,188 @@ def animate_decision_boundary_training(model, X, y, recorder, resolution=200,
             print("Make sure FFmpeg is installed: brew install ffmpeg")
     
     return anim, fig
+
+
+def animate_dataset_scatter_plot(X, y, batch_size, fps=10, save_path="dataset_scatter.mp4"):
+    """
+    Create animated video of dataset scatter plot.
+    Starts with just axes, then plots each point one by one, initially without color.
+    
+    Args:
+        X: Training data (N, 2) - uses first 2 dimensions
+        y: Labels (N,)
+        fps: Frames per second
+        save_path: Path to save the video (MP4)
+    """
+    n_samples = len(X)
+    
+    # Calculate axis limits (same as decision boundary)
+    x_min, x_max = X[:, 0].min() - 0.5, X[:, 0].max() + 0.5
+    y_min, y_max = X[:, 1].min() - 0.5, X[:, 1].max() + 0.5
+    
+    # Setup figure (16:9) - same as decision boundary
+    fig, ax = plt.subplots(figsize=(16, 9))
+    fig.patch.set_facecolor(PLAYGROUND_COLORS['background'])
+    fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
+    
+    def _style_axes(axis: plt.Axes):
+        axis.set_facecolor('white')
+        axis.set_xlim(x_min, x_max)
+        axis.set_ylim(y_min, y_max)
+        axis.tick_params(axis='x', which='both', length=0)  # Remove tick marks X
+        axis.tick_params(axis='y', which='both', length=0)  # Remove tick marks Y
+        # Same tick styling as decision boundary (keep labels)
+        axis.tick_params(axis='x', which='major', labeltop=False, labelbottom=True, pad=-25, labelsize=16)
+        axis.tick_params(axis='y', which='major', labelright=False, labelleft=True, pad=-45, labelsize=16)
+        for spine in axis.spines.values():
+            spine.set_visible(False)
+        axis.grid(True, color=PLAYGROUND_COLORS['grid'], alpha=0.25, linestyle='--', linewidth=0.6)
+    
+    # Style axes initially (no points yet)
+    _style_axes(ax)
+    
+    # Info text
+    info_text = fig.text(
+        0.06,
+        0.93,
+        '',
+        fontsize=16,
+        fontweight='bold',
+        color=PLAYGROUND_COLORS['text'],
+        bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.9,
+                  edgecolor=PLAYGROUND_COLORS['grid'])
+    )
+    
+    # Calculate batches
+    n_batches = (n_samples + batch_size - 1) // batch_size  # Ceiling division
+    
+    # Animation function
+    def animate(frame):
+        ax.clear()
+        _style_axes(ax)
+        
+        # Frame 0: Just axes
+        if frame == 0:
+            info_text.set_text(f"Dataset: {n_samples} points")
+        # Frames 1 to n_batches: Plot points in batches of 10 (gray)
+        elif frame <= n_batches:
+            batch_idx = frame
+            points_to_show = min(batch_idx * batch_size, n_samples)
+            x_vals = X[:points_to_show, 0]
+            y_vals = X[:points_to_show, 1]
+            
+            # Use gray for all points initially (no color)
+            colors = ['#808080'] * points_to_show  # Gray color
+            
+            scatter = ax.scatter(
+                x_vals,
+                y_vals,
+                c=colors,
+                edgecolors='white',
+                linewidths=2,
+                s=80,
+                alpha=0.95,
+                zorder=10
+            )
+            
+            info_text.set_text(f"Dataset: {points_to_show}/{n_samples} points")
+        # Frame n_batches + 1: All points shown in gray
+        elif frame == n_batches + 1:
+            # All points in gray
+            scatter = ax.scatter(
+                X[:, 0],
+                X[:, 1],
+                c=['#808080'] * n_samples,
+                edgecolors='white',
+                linewidths=2,
+                s=80,
+                alpha=0.95,
+                zorder=10
+            )
+            info_text.set_text(f"Dataset: {n_samples} points")
+        # Frame n_batches + 2: Add class 0 color
+        elif frame == n_batches + 2:
+            # Color class 0 points, keep class 1 gray
+            colors = [PLAYGROUND_COLORS['class_0'] if label == 0 else '#808080'
+                     for label in y.flatten()]
+            
+            scatter = ax.scatter(
+                X[:, 0],
+                X[:, 1],
+                c=colors,
+                edgecolors='white',
+                linewidths=2,
+                s=80,
+                alpha=0.95,
+                zorder=10
+            )
+            
+            # Add class 0 label
+            ax.text(0.95, 0.95, 'Class 0', transform=ax.transAxes,
+                   fontsize=18, fontweight='bold', color=PLAYGROUND_COLORS['class_0'],
+                   ha='right', va='top',
+                   bbox=dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.9,
+                            edgecolor=PLAYGROUND_COLORS['class_0'], linewidth=2))
+            
+            info_text.set_text(f"Dataset: {n_samples} points")
+        # Frame n_batches + 3: Add class 1 color
+        else:
+            # All points with their class colors
+            colors = [PLAYGROUND_COLORS['class_0'] if label == 0 else PLAYGROUND_COLORS['class_1']
+                     for label in y.flatten()]
+            
+            scatter = ax.scatter(
+                X[:, 0],
+                X[:, 1],
+                c=colors,
+                edgecolors='white',
+                linewidths=2,
+                s=80,
+                alpha=0.95,
+                zorder=10
+            )
+            
+            # Add both class labels
+            ax.text(0.95, 0.95, 'Class 0', transform=ax.transAxes,
+                   fontsize=18, fontweight='bold', color=PLAYGROUND_COLORS['class_0'],
+                   ha='right', va='top',
+                   bbox=dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.9,
+                            edgecolor=PLAYGROUND_COLORS['class_0'], linewidth=2))
+            ax.text(0.95, 0.88, 'Class 1', transform=ax.transAxes,
+                   fontsize=18, fontweight='bold', color=PLAYGROUND_COLORS['class_1'],
+                   ha='right', va='top',
+                   bbox=dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.9,
+                            edgecolor=PLAYGROUND_COLORS['class_1'], linewidth=2))
+            
+            info_text.set_text(f"Dataset: {n_samples} points")
+        
+        return ax, info_text
+    
+    # Create animation: 
+    # - Frame 0: axes only
+    # - Frames 1 to n_batches: add points in batches of 10 (gray)
+    # - Frame n_batches + 1: all points gray
+    # - Frame n_batches + 2: add class 0 color + label
+    # - Frame n_batches + 3+: add class 1 color + both labels (hold for a few frames)
+    n_frames = 1 + n_batches + 1 + 1 + 5  # 1 (axes) + batches + 1 (all gray) + 1 (class 0) + 5 (class 1 hold)
+    anim = FuncAnimation(fig, animate, frames=n_frames, interval=1000/fps,
+                        blit=False, repeat=True)
+    
+    # Save video
+    print(f"Creating dataset scatter plot video with {n_frames} frames...")
+    try:
+        writer = FFMpegWriter(fps=fps, bitrate=1800)
+        anim.save(save_path, writer=writer)
+        print(f"Video saved to {save_path}")
+    except Exception as e:
+        print(f"FFmpeg not available, trying Pillow (GIF)...")
+        try:
+            gif_path = save_path.replace('.mp4', '.gif')
+            writer = PillowWriter(fps=fps)
+            anim.save(gif_path, writer=writer)
+            print(f"GIF saved to {gif_path}")
+        except Exception as e2:
+            print(f"Error saving video: {e2}")
+            print("Make sure FFmpeg is installed: brew install ffmpeg")
+    
+    return anim, fig
