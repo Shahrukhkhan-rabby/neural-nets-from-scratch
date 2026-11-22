@@ -1194,3 +1194,346 @@ def _draw_network_with_activations(ax, model, layer_dims, neuron_positions, neur
     # Position legend in upper right corner
     ax.legend(handles=legend_elements, loc='upper right', fontsize=16)
 
+
+def animate_loss_landscape_2d(model, X, y, loss_fn, recorder, resolution=50, fps=10,
+                              title="2D Loss Landscape with Training Trajectory",
+                              save_path="loss_landscape_2d.mp4"):
+    """
+    Create animated video showing 2D loss landscape with training trajectory.
+    Shows how the model moves through parameter space toward the minimum.
+    
+    Args:
+        model: Sequential model
+        X: Training data (N, features)
+        y: Training labels (N,)
+        loss_fn: Loss function
+        recorder: TrainingRecorder with training history
+        resolution: Grid resolution for loss landscape
+        fps: Frames per second
+        title: Video title
+        save_path: Path to save video
+    """
+    # Use the standard "two basis directions" approach for loss landscapes
+    # This is the approach used in the loss landscape visualization paper
+    # Direction 1: from initial to final parameters (main training direction)
+    # Direction 2: random direction orthogonal to direction 1
+    
+    # Get initial and final parameters
+    initial_epoch = recorder.get_all_epochs()[0]
+    final_epoch = recorder.get_all_epochs()[-1]
+    
+    recorder.restore_model_state(model, initial_epoch)
+    initial_params = _get_model_parameters(model)
+    
+    recorder.restore_model_state(model, final_epoch)
+    final_params = _get_model_parameters(model)
+    
+    # Use initial parameters as center
+    center_params = initial_params.copy()
+    
+    # Direction 1: from initial to final (the main training direction)
+    direction1 = final_params - initial_params
+    direction1_norm = np.linalg.norm(direction1)
+    if direction1_norm > 1e-10:
+        direction1 = direction1 / direction1_norm
+    else:
+        # If no change, use a random direction
+        direction1 = np.random.randn(len(initial_params))
+        direction1 = direction1 / np.linalg.norm(direction1)
+    
+    # Direction 2: random direction orthogonal to direction 1
+    # Generate random vector and make it orthogonal
+    direction2 = np.random.randn(len(initial_params))
+    # Remove component parallel to direction1 (Gram-Schmidt)
+    direction2 = direction2 - np.dot(direction2, direction1) * direction1
+    direction2_norm = np.linalg.norm(direction2)
+    if direction2_norm > 1e-10:
+        direction2 = direction2 / direction2_norm
+    else:
+        # If orthogonalization failed, generate a new random direction
+        direction2 = np.random.randn(len(initial_params))
+        direction2 = direction2 - np.dot(direction2, direction1) * direction1
+        direction2 = direction2 / np.linalg.norm(direction2)
+    
+    print(f"Using two basis directions:")
+    print(f"  Direction 1: Initial → Final (training direction)")
+    print(f"  Direction 2: Random orthogonal direction")
+    
+    # Project trajectory onto 2D space and verify loss values
+    trajectory = []
+    trajectory_losses = []
+    trajectory_alphas = []
+    trajectory_betas = []
+    trajectory_losses_verified = []  # Loss computed at actual parameter points
+    
+    for epoch in recorder.get_all_epochs():
+        recorder.restore_model_state(model, epoch)
+        params = _get_model_parameters(model)
+        
+        # Project onto 2D space using basis directions
+        alpha = np.dot(params - center_params, direction1)
+        beta = np.dot(params - center_params, direction2)
+        trajectory.append((alpha, beta))
+        trajectory_alphas.append(alpha)
+        trajectory_betas.append(beta)
+        
+        # Get loss at this epoch (from recorder)
+        state = recorder.get_state_at_epoch(epoch)
+        trajectory_losses.append(state.get('loss', 0))
+        
+        # Verify loss by computing it at the actual parameters
+        y_pred = model.forward(X)
+        verified_loss = loss_fn.calculate(y_pred, y)
+        trajectory_losses_verified.append(verified_loss)
+    
+    # Adjust grid bounds to include the full trajectory with padding
+    alpha_min, alpha_max = min(trajectory_alphas), max(trajectory_alphas)
+    beta_min, beta_max = min(trajectory_betas), max(trajectory_betas)
+    
+    # Add padding (20% on each side)
+    alpha_padding = (alpha_max - alpha_min) * 0.2 if alpha_max > alpha_min else 0.5
+    beta_padding = (beta_max - beta_min) * 0.2 if beta_max > beta_min else 0.5
+    
+    alpha_range = np.linspace(alpha_min - alpha_padding, alpha_max + alpha_padding, resolution)
+    beta_range = np.linspace(beta_min - beta_padding, beta_max + beta_padding, resolution)
+    alpha_grid, beta_grid = np.meshgrid(alpha_range, beta_range)
+    
+    # Create loss landscape by interpolating from actual trajectory losses
+    # This ensures the landscape matches the actual training losses at trajectory points
+    print("Creating loss landscape from actual training losses (interpolating)...")
+    
+    # Extract trajectory coordinates and their actual losses
+    traj_alphas_array = np.array(trajectory_alphas)
+    traj_betas_array = np.array(trajectory_betas)
+    traj_losses_array = np.array(trajectory_losses_verified)
+    
+    # Create grid
+    alpha_grid, beta_grid = np.meshgrid(alpha_range, beta_range)
+    
+    # Interpolate loss values from trajectory points to grid
+    loss_landscape = None
+    if RBFInterpolator is not None:
+        try:
+            # RBF interpolation - smooth and matches data points exactly
+            print("  Using RBF interpolation for smooth landscape...")
+            rbf = RBFInterpolator(
+                np.column_stack((traj_alphas_array, traj_betas_array)),
+                traj_losses_array,
+                kernel='thin_plate_spline',  # Smooth interpolation
+                smoothing=0.0  # Exact match at data points
+            )
+            
+            # Evaluate on grid
+            grid_points = np.column_stack((alpha_grid.ravel(), beta_grid.ravel()))
+            loss_landscape = rbf(grid_points).reshape(alpha_grid.shape)
+        except Exception as e:
+            print(f"  RBF interpolation failed ({e}), will attempt griddata fallback...")
+    
+    if loss_landscape is None:
+        if griddata is None:
+            raise ImportError(
+                "scipy.interpolate.griddata is required to compute the loss landscape. "
+                "Install SciPy or provide precomputed landscape data."
+            )
+        
+        print("  Using griddata interpolation for loss landscape...")
+        points = np.column_stack((traj_alphas_array, traj_betas_array))
+        values = traj_losses_array
+        
+        # Try cubic first (smooth)
+        loss_landscape = griddata(points, values, (alpha_grid, beta_grid),
+                                  method='cubic', fill_value=np.nan)
+        
+        # Fill NaN with linear interpolation
+        if np.any(np.isnan(loss_landscape)):
+            loss_landscape_linear = griddata(points, values, (alpha_grid, beta_grid),
+                                             method='linear', fill_value=np.nan)
+            loss_landscape = np.where(~np.isnan(loss_landscape), loss_landscape,
+                                      loss_landscape_linear)
+        
+        # Fill remaining NaN with nearest neighbor
+        if np.any(np.isnan(loss_landscape)):
+            loss_landscape_nn = griddata(points, values, (alpha_grid, beta_grid),
+                                         method='nearest')
+            loss_landscape = np.where(~np.isnan(loss_landscape), loss_landscape,
+                                      loss_landscape_nn)
+    
+    # Clamp loss values to realistic bounds (interpolation can create invalid values)
+    # Loss functions like cross-entropy should always be >= 0, but we clamp to
+    # the actual observed range to avoid showing unrealistic values
+    min_observed_loss = np.min(traj_losses_array)
+    max_observed_loss = np.max(traj_losses_array)
+    
+    # Clamp to observed range (with small padding for visualization)
+    # This ensures we don't show loss=0 (which would mean perfect predictions, unlikely)
+    # or negative values (which are impossible)
+    loss_range = max_observed_loss - min_observed_loss
+    min_clamp = max(0.0, min_observed_loss - loss_range * 0.1)  # Allow small extrapolation below min
+    max_clamp = max_observed_loss + loss_range * 0.5  # Allow some extrapolation above max
+    
+    loss_landscape = np.clip(loss_landscape, min_clamp, max_clamp)
+    
+    # Verify: check that landscape matches trajectory losses at trajectory points
+    print("  Verifying landscape matches trajectory losses...")
+    for i, (alpha, beta, true_loss) in enumerate(zip(traj_alphas_array, traj_betas_array, traj_losses_array)):
+        # Find closest grid point
+        alpha_idx = np.argmin(np.abs(alpha_range - alpha))
+        beta_idx = np.argmin(np.abs(beta_range - beta))
+        landscape_loss = loss_landscape[beta_idx, alpha_idx]
+        diff = abs(landscape_loss - true_loss)
+        if diff > 0.01:  # Warn if difference is significant
+            if i == 0 or i == len(traj_alphas_array) - 1:  # Only warn for first/last
+                print(f"    Warning: Point {i} loss mismatch: {true_loss:.6f} vs {landscape_loss:.6f} (diff: {diff:.6f})")
+    
+    print("Loss landscape created from actual training losses!")
+    
+    # Find min/max for visualization
+    # Include trajectory losses to ensure they're visible
+    loss_min = min(np.min(loss_landscape), min(trajectory_losses_verified))
+    loss_max = max(np.max(loss_landscape), max(trajectory_losses_verified))
+    
+    # Add small padding to range
+    loss_range = loss_max - loss_min
+    loss_min -= loss_range * 0.05
+    loss_max += loss_range * 0.05
+    
+    # Setup figure (16:9) - full bleed, matching decision boundary styling
+    fig, ax = plt.subplots(figsize=(16, 9))
+    fig.patch.set_facecolor(PLAYGROUND_COLORS['background'])
+    fig.subplots_adjust(left=0, right=1, top=1, bottom=0)
+    
+    # Create colormap for loss (low = blue, high = red)
+    loss_colors = ['#3E6589', '#95E1D3', '#FFD93D', '#D87373']
+    loss_cmap = LinearSegmentedColormap.from_list('loss', loss_colors, N=256)
+    
+    # Initial plot: loss landscape
+    contour = ax.contourf(alpha_grid, beta_grid, loss_landscape, levels=50,
+                          cmap=loss_cmap, vmin=loss_min, vmax=loss_max, alpha=0.8)
+    ax.contour(alpha_grid, beta_grid, loss_landscape, levels=20,
+              colors='black', linewidths=0.5, alpha=0.3)
+    
+    # Colorbar (vertical, inset on the right inside the plot)
+    pos = ax.get_position()
+    cbar_width = 0.01 * pos.width
+    cbar_height = 0.6 * pos.height
+    cbar_left = pos.x1 - cbar_width * 7
+    cbar_bottom = pos.y0 + (pos.height - cbar_height) / 2
+    cbar_ax = fig.add_axes([cbar_left, cbar_bottom, cbar_width, cbar_height])
+    loss_norm = Normalize(vmin=loss_min, vmax=loss_max)
+    sm_loss = ScalarMappable(norm=loss_norm, cmap=loss_cmap)
+    sm_loss.set_array([])
+    tick_vals = np.linspace(loss_min, loss_max, 4)
+    cbar = fig.colorbar(sm_loss, cax=cbar_ax, orientation='vertical', ticks=tick_vals)
+    cbar.ax.tick_params(colors=PLAYGROUND_COLORS['text'], labelsize=16, length=0)
+    cbar.outline.set_edgecolor('none')
+    cbar.ax.set_ylabel('Loss', fontsize=16, fontweight='bold', color=PLAYGROUND_COLORS['text'], labelpad=10)
+    
+    def _style_axes(axis: plt.Axes):
+        axis.set_facecolor('white')
+        axis.set_xlim(alpha_range[0], alpha_range[-1])
+        axis.set_ylim(beta_range[0], beta_range[-1])
+
+        # Set major ticks to be inside the plot for both axes
+        axis.tick_params(axis='x', which='major', direction='in', labeltop=False, labelbottom=True, pad=-25, labelsize=16)
+        axis.tick_params(axis='y', which='major', direction='in', labelright=False, labelleft=True, pad=-45, labelsize=16)
+        for spine in axis.spines.values():
+            spine.set_visible(False)
+        axis.grid(True, color=PLAYGROUND_COLORS['grid'], alpha=0.25, linestyle='--', linewidth=0.6)
+    _style_axes(ax)
+    
+    info_text = fig.text(
+        0.06,
+        0.93,
+        '',
+        fontsize=16,
+        fontweight='bold',
+        color=PLAYGROUND_COLORS['text'],
+        bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.9,
+                  edgecolor=PLAYGROUND_COLORS['grid'])
+    )
+    
+    # Animation function
+    def animate(frame):
+        ax.clear()
+        ax.set_facecolor('white')
+        
+        # Redraw loss landscape
+        contour = ax.contourf(alpha_grid, beta_grid, loss_landscape, levels=50,
+                             cmap=loss_cmap, vmin=loss_min, vmax=loss_max, alpha=0.8)
+        ax.contour(alpha_grid, beta_grid, loss_landscape, levels=20,
+                  colors='black', linewidths=0.5, alpha=0.3)
+        _style_axes(ax)
+        cbar.update_normal(contour)
+        
+        # Draw trajectory up to current frame
+        current_trajectory = trajectory[:frame+1]
+        current_losses = trajectory_losses_verified[:frame+1]  # Use actual losses from training
+        
+        if len(current_trajectory) > 1:
+            traj_alpha = [t[0] for t in current_trajectory]
+            traj_beta = [t[1] for t in current_trajectory]
+            
+            # Draw trajectory line - the landscape now matches actual losses via interpolation
+            # So we can just draw a clean line that follows the landscape colors
+            ax.plot(traj_alpha, traj_beta, 'o-', color='white', linewidth=3,
+                   markersize=6, alpha=0.9, label='Training Path', zorder=10)
+            
+            # Draw current position with color based on actual current loss
+            if len(current_losses) > 0:
+                current_loss = current_losses[-1]
+                # Normalize current loss relative to landscape
+                if loss_max > loss_min:
+                    loss_norm = (current_loss - loss_min) / (loss_max - loss_min)
+                    loss_norm = max(0, min(1, loss_norm))  # Clamp to [0, 1]
+                else:
+                    loss_norm = 0.5
+                marker_color = loss_cmap(1 - loss_norm)  # Invert so blue = low loss
+            else:
+                marker_color = 'yellow'
+            
+            # Highlight current position with star
+            ax.scatter(traj_alpha[-1], traj_beta[-1], s=300, c=marker_color,
+                      edgecolors='black', linewidths=3, marker='*', zorder=12,
+                      label='Current Position')
+        
+        # Update text with actual loss from training
+        epoch = recorder.get_all_epochs()[frame]
+        loss_val = current_losses[-1] if current_losses else 0
+        info_text.set_text(f"Epoch {epoch}\nLoss: {loss_val:.6f}")
+        
+        return contour, info_text
+    
+    # Create animation
+    n_frames = len(recorder.history)
+    anim = FuncAnimation(fig, animate, frames=n_frames, interval=1000/fps,
+                        blit=False, repeat=True)
+    
+    # Save video
+    print(f"Creating loss landscape video with {n_frames} frames...")
+    try:
+        writer = FFMpegWriter(fps=fps, bitrate=1800)
+        anim.save(save_path, writer=writer)
+        print(f"Video saved to {save_path}")
+    except Exception as e:
+        print(f"FFmpeg not available, trying Pillow (GIF)...")
+        try:
+            gif_path = save_path.replace('.mp4', '.gif')
+            writer = PillowWriter(fps=fps)
+            anim.save(gif_path, writer=writer)
+            print(f"GIF saved to {gif_path}")
+        except Exception as e2:
+            print(f"Error saving video: {e2}")
+            print("Make sure FFmpeg is installed: brew install ffmpeg")
+    
+    return anim, fig
+
+
+def _get_model_parameters(model):
+    """Extract all parameters from model and flatten into 1D array."""
+    params = []
+    for layer in model.layers:
+        if hasattr(layer, 'W'):
+            params.append(layer.W.flatten())
+        if hasattr(layer, 'b'):
+            params.append(layer.b.flatten())
+    return np.concatenate(params) if params else np.array([])
